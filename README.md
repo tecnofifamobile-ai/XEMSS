@@ -1,48 +1,71 @@
 # XEMSS
 
+[![Windows CI](https://github.com/tecnofifamobile-ai/XEMSS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tecnofifamobile-ai/XEMSS/actions/workflows/ci.yml)
+
 **XBOX Emulator for Series S** is an open-source compatibility project for
-Windows x64. Its first milestone ports VIctory's PE and shader components into
-a standalone diagnostic tool under GPL-3.0-or-later.
+Windows x64. The current milestone delivers a command-line toolkit for inspecting
+executables and translating shaders. Running games requires the loader and
+graphics milestones below.
 
-## Current capabilities
+## Project status
 
-- Inspect AMD64 PE32+ headers, imports, delay-load imports, exports, and TLS
-  metadata without executing the image.
-- Inspect DXBC containers and the stages of console shaders they contain.
-- Translate supported RDNA2 vertex, pixel, compute, and mesh shader programs to
-  a new DXIL file. On Windows, an installed Windows SDK can validate the output.
+### Available on `main`
 
-Game boot and rendering require a loader and a graphics runtime. Those are
-future milestones. Follow the [roadmap](docs/roadmap.md) and
-[source provenance](docs/provenance.md) for scope and upstream attribution.
+| Capability | What works | Verification |
+| --- | --- | --- |
+| PE inspection | Reads AMD64 PE32+ headers, imports, delay-load imports, exports, and TLS metadata without executing the image. | Parser tests and CLI inspection of its own Windows executable. |
+| DXBC inspection | Lists container sections and native shader stages. Rejects sections that point into the container header or offset table. | Synthetic inputs and a parser regression test. |
+| RDNA2 shader translation | Emits host DXIL for supported vertex, pixel, compute, and mesh programs. | A synthetic compute shader exercises the full CLI path. |
+| DXIL validation | Uses an installed Windows SDK validator before writing the output when requested. | The CLI fixture can exercise the SDK validator locally. |
 
-## Build and use
+### Pending
 
-On Windows x64, install Rust via rustup and the MSVC C++ build tools with a
-Windows SDK. The Rust version is pinned in `rust-toolchain.toml`.
+| Milestone | What will demonstrate completion |
+| --- | --- |
+| AMD64 loader | Map and relocate a synthetic PE, resolve test imports, and call its entry point. |
+| D3D12 runtime | Bind resources, submit a synthetic draw and compute dispatch, and verify their readbacks. |
+| Broader shader coverage | Reproduce reported control-flow and resource-write discrepancies with synthetic tests. |
+| Game compatibility | Measure boot and rendering with authorized inputs. GTA VI remains unverified. |
+
+See the [roadmap](docs/roadmap.md) for acceptance criteria and upstream reports.
+[Open pull requests](https://github.com/tecnofifamobile-ai/XEMSS/pulls) show changes awaiting review.
+
+## Quick start
+
+Use Windows x64 with [rustup](https://rustup.rs/), the MSVC C++ build tools,
+and a Windows SDK. Cargo uses the Rust version pinned in
+[`rust-toolchain.toml`](rust-toolchain.toml).
 
 ```powershell
+git clone https://github.com/tecnofifamobile-ai/XEMSS.git
+Set-Location XEMSS
 cargo build --release --locked
-cargo run --locked -p xemss -- inspect-pe path/to/program.exe --imports
-cargo run --locked -p xemss -- inspect-shader path/to/shader.dxbc
-cargo run --locked -p xemss -- translate-shader path/to/shader.dxbc -o translated.dxil --validate
+.\target\release\xemss.exe --help
 ```
 
-Supply one DXBC shader container to the shader commands. Translation creates the
-output only if that path is free. With `--validate`, the tool tries to find
-`dxil.dll` in the Windows SDK. Set `VICTORY_DXIL` to its absolute path to
-select a specific version.
-
-## Contribute
+Try PE inspection on the executable you just built. For the shader commands,
+replace `path\to\shader.dxbc` with a local DXBC container you can use.
 
 ```powershell
-cargo fmt -p xemss -- --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test --workspace --locked
+.\target\release\xemss.exe inspect-pe .\target\release\xemss.exe --imports
+.\target\release\xemss.exe inspect-shader .\path\to\shader.dxbc
+.\target\release\xemss.exe translate-shader .\path\to\shader.dxbc -o translated.dxil --validate
 ```
 
-Report the command, commit, host OS, expected behavior, and actual behavior.
-For graphics issues, include the adapter and driver version and a small
-synthetic reproducer. Keep commercial or confidential inputs local. The CLI
-integration tests generate their own shader and can also exercise
-`--validate` when `XEMSS_TEST_DXIL` points to a Windows SDK validator.
+Translation requires a new output path. With `--validate`, XEMSS looks for
+`dxil.dll` in the Windows SDK. Set `VICTORY_DXIL` to its absolute path to
+select a specific validator.
+
+## Repository layout
+
+| Location | Responsibility |
+| --- | --- |
+| [`apps/xemss/`](apps/xemss/) | CLI commands, file handling, and end-to-end tests. |
+| [`crates/victory-pe/`](crates/victory-pe/) | PE32+ parsing and executable metadata. |
+| [`crates/victory-shader/`](crates/victory-shader/) | DXBC parsing, RDNA2 translation, DXIL emission, and GPU tests. |
+| [`docs/`](docs/) | [Architecture](docs/architecture.md), [roadmap](docs/roadmap.md), and [source provenance](docs/provenance.md). |
+| [`.github/`](.github/) | Windows CI and templates for issues and pull requests. |
+
+See [Contributing](CONTRIBUTING.md) for the test commands and how to report
+a reproducible failure. XEMSS is distributed under
+[GPL-3.0-or-later](LICENSE).
