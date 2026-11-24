@@ -7,7 +7,7 @@ Open-source compatibility research for Xbox Series S software on Windows x64.
 [![Windows CI](https://github.com/tecnofifamobile-ai/XEMSS/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tecnofifamobile-ai/XEMSS/actions/workflows/ci.yml)
 [GPL-3.0-or-later](LICENSE)
 
-[Project status](#project-status) · [Quick start](#quick-start) · [Command guide](#command-guide) · [How it works](#how-it-works) · [Verification](#verification) · [Contribute](#contribute)
+[Project status](#project-status) · [Measured baseline](#measured-baseline) · [Quick start](#quick-start) · [Command guide](#command-guide) · [How it works](#how-it-works) · [Verification](#verification) · [Road to game boot](#road-to-game-boot) · [Contribute](#contribute)
 
 XEMSS currently ships a Rust CLI that inspects AMD64 executables and translates
 supported RDNA2 shaders into DXIL for Direct3D 12. The project uses synthetic
@@ -19,23 +19,38 @@ inputs to verify each part before it becomes a dependency of the runtime.
 
 ## Project status
 
+✅ Implemented and verified for the stated scope · 🟡 Implemented in part or
+partially verified · 🔴 Pending a working milestone or a verified result
+
+| Measure | Count | Scope |
+| --- | ---: | --- |
+| Implemented CLI commands | **3** | Inspect PE, inspect DXBC, and translate a shader. |
+| Shader stages with a translation path | **4** | Vertex, pixel, compute, and mesh. Instruction coverage varies by stage. |
+| Stages exercised end to end by the CLI fixture | **1 of 4** | Compute. The fixture generates its own console-style DXBC and checks the emitted DXIL. |
+| D3D12 test backends exercised locally | **2** | The hardware adapter and WARP ran the synthetic f32 signed-zero regression. |
+| Verified game boots | **0** | XEMSS has a synthetic test suite and a pending loader milestone. |
+
 ### Available on `main`
 
-| Capability | What works | Evidence |
+| Status | Capability | What works | Evidence |
+| --- | --- | --- | --- |
+| ✅ | Windows x64 build | The pinned Rust workspace builds with the locked dependency set. | [Windows CI](https://github.com/tecnofifamobile-ai/XEMSS/actions/workflows/ci.yml). |
+| ✅ | PE32+ inspection | Reads AMD64 image metadata, imports, delay-load imports, exports, and TLS callbacks. | [CLI smoke test](apps/xemss/tests/cli.rs) and [PE parser tests](crates/victory-pe/src/image.rs). |
+| ✅ | DXBC inspection | Lists container sections and shader stages. Rejects parts that point into the header or offset table. | [Header-boundary regression](crates/victory-shader/src/dxbc.rs). |
+| ✅ | Output handling | The CLI writes a new DXIL file and preserves any existing file at the chosen destination. | [End-to-end CLI tests](apps/xemss/tests/cli.rs). |
+| ✅ | SDK validation | Checks emitted DXIL with an installed Windows SDK before writing it when `--validate` is set. | [Run the integration test with the SDK](#verification). |
+| 🟡 | RDNA2 → DXIL | Translation paths exist for four stages. Coverage depends on the instructions, formats, and resource patterns in each shader. | [Stage matrix](#shader-stage-coverage) and [synthetic compute fixture](apps/xemss/tests/cli.rs). |
+| 🟡 | GPU behavior | Selected synthetic shaders run through D3D12. Broader driver and game coverage is pending. | [GPU tests](crates/victory-shader/src/emit/valu_tests.rs). |
+
+### Pending and in progress
+
+| Status | Milestone | What will demonstrate completion |
 | --- | --- | --- |
-| PE32+ inspection | Reads AMD64 image metadata, imports, delay-load imports, exports, and TLS callbacks. | [CLI smoke test](apps/xemss/tests/cli.rs) and [PE parser tests](crates/victory-pe/src/image.rs). |
-| DXBC inspection | Lists container sections and shader stages. Rejects parts that point into the header or offset table. | [Header-boundary regression](crates/victory-shader/src/dxbc.rs). |
-| RDNA2 → DXIL | Emits DXIL for supported vertex, pixel, compute, and mesh programs. | [Synthetic compute fixture](apps/xemss/tests/cli.rs) exercises the complete CLI path. |
-| SDK validation | Checks the emitted DXIL with an installed Windows SDK before writing the file when `--validate` is set. | [Run the integration test with the SDK](#verification). |
-
-### Pending
-
-| Milestone | What will demonstrate completion |
-| --- | --- |
-| AMD64 loader | Map and relocate a generated PE, resolve synthetic imports, and call its entry point. |
-| D3D12 runtime | Bind resources, submit a synthetic draw and compute dispatch, and verify both readbacks. |
-| Broader shader coverage | Reproduce reported control-flow and resource-write discrepancies and turn them into regressions. |
-| Game boot and rendering | Collect reproducible results with authorized inputs and locate the first divergent frame or resource. |
+| 🔴 | PE mapping and relocation | Map a generated AMD64 image and verify that a nonpreferred base relocates its addresses. |
+| 🔴 | Import binding and entry point | Resolve synthetic imports, invoke the entry point, and observe the expected result. |
+| 🔴 | D3D12 bindings and submission | Bind resources and submit a synthetic draw and compute dispatch with matching pixel and buffer readbacks. |
+| 🟡 | Shader instruction coverage | Reproduce reported control-flow and resource-write discrepancies and turn them into regressions. |
+| 🔴 | Game boot and rendering | Collect reproducible results with authorized inputs and locate the first divergent frame or resource. |
 
 The [roadmap](docs/roadmap.md) links the upstream reports and acceptance
 criteria. The [GTA VI PC Race standings](https://vuyp.github.io/gta6-pc-race/#standings)
@@ -44,12 +59,41 @@ track other projects' reports. The evidence above belongs to XEMSS.
 <details>
 <summary><b>Which hosts and GPUs have coverage?</b></summary>
 
-| Host or backend | Scope |
-| --- | --- |
-| Windows x64 | Documented build target. GitHub Actions builds and tests the workspace on Windows. |
-| D3D12 hardware adapter | Selected synthetic GPU tests use a Shader Model 6.6 adapter when one is available. Verify your own adapter and driver with the test suite. |
-| WARP | The same selected tests can use Microsoft's software D3D12 adapter when it supports Shader Model 6.6. |
-| Other platforms | Build and runtime support are unverified in XEMSS. |
+| Status | Host or backend | Scope |
+| --- | --- | --- |
+| ✅ | Windows x64 | Documented build target. GitHub Actions builds and tests the workspace on Windows. |
+| 🟡 | D3D12 hardware adapter | Selected synthetic GPU tests use a Shader Model 6.6 adapter when one is available. Verify your own adapter and driver with the test suite. |
+| 🟡 | WARP | The same selected tests can use Microsoft's software D3D12 adapter when it supports Shader Model 6.6. |
+| 🔴 | Other platforms | Build and runtime support are unverified in XEMSS. |
+
+</details>
+
+## Measured baseline
+
+Snapshot at [`70a2f97`](https://github.com/tecnofifamobile-ai/XEMSS/commit/70a2f97d6056dfad9633d132232a0e4de2444ab6)
+on Windows x64 with the Windows SDK 10.0.28000.0 validator enabled for the
+CLI fixture. The totals describe that revision and can be reproduced with
+the commands under [Verification](#verification).
+
+| Status | Suite | Executed and passed | Optional checks skipped | Ignored |
+| --- | --- | ---: | ---: | ---: |
+| ✅ | PE parser and helpers | **7** | 0 | 0 |
+| 🟡 | Shader reader, translator, and GPU tests | **117** | **4** | **1** benchmark |
+| ✅ | CLI integration | **3** | 0 | 0 |
+| 🟡 | **Total** | **127** | **4** | **1** |
+
+<details>
+<summary><b>How the test totals were counted</b></summary>
+
+Cargo printed **131 passed**, **0 failed**, and **1 ignored** across the
+three suites. Four shader comparisons return early when the optional console
+compiler is unavailable and are included in Cargo's pass count. The table
+deducts those four from the number of tests that executed their checks.
+The separate ignored case is a benchmark.
+
+The CLI fixture verifies one compute program on the local SDK. The GPU suite
+checks synthetic shader behavior. Neither supplies a count of translated
+commercial shaders, supported titles, or measured game frame rates.
 
 </details>
 
@@ -133,6 +177,23 @@ validator.
 
 </details>
 
+<details>
+<summary><b>Read an executable inspection report</b></summary>
+
+| Field | How to interpret it |
+| --- | --- |
+| Subsystem | The environment declared in the PE header, such as the Windows console subsystem. |
+| Entry RVA | The entry point's offset relative to the image base. Image mapping is a separate loader milestone. |
+| Sections | Number of section headers found in the image. |
+| Imports | Count of imported symbols and the DLLs that provide them. |
+| Delay-load DLLs | DLLs whose imports are declared in the delay-load directory. |
+| Exports and TLS callbacks | Counts of exported entries and thread-local storage callbacks recorded in the image. |
+
+Run `inspect-pe --imports` to add symbol names to the report. For a
+reproducible parser issue, include the image type and the exact error output.
+
+</details>
+
 ## How it works
 
 ```mermaid
@@ -148,6 +209,34 @@ The PE parser exposes image metadata to the CLI. The shader path decodes the
 console's instructions, builds an intermediate representation, analyzes
 control flow and resources, and emits a new DXIL container. See the
 [architecture guide](docs/architecture.md) for the entry points.
+
+### Shader stage coverage
+
+All four rows have a translator entry path. The status measures the current
+depth of verification, including which stage has a complete CLI fixture.
+
+| Status | Stage | Translation and test scope |
+| --- | --- | --- |
+| 🟡 | Vertex (VS) | The emitter maps vertex inputs and outputs. A dedicated end-to-end CLI fixture is pending. |
+| 🟡 | Pixel (PS) | The emitter handles pixel inputs and output signatures. The shader suite includes a synthetic constant-color draw. |
+| ✅ | Compute (CS) | A generated DXBC fixture passes inspection, translation, Windows SDK validation, and output checks. Separate GPU tests verify selected compute instructions. |
+| 🟡 | Mesh (MS) | The emitter handles mesh-stage metadata and outputs. Broader execution checks depend on host features and optional compilers. |
+
+<details>
+<summary><b>Follow a shader through the translator</b></summary>
+
+1. [DXBC parsing](crates/victory-shader/src/dxbc.rs) reads the section table
+   and checks that the parts fit within the declared container.
+2. [Native extraction](crates/victory-shader/src/native.rs) finds the console
+   program, then decodes its stage and resource metadata.
+3. [Instruction and control-flow analysis](crates/victory-shader/src/ir.rs)
+   builds the intermediate representation used by the emitter.
+4. [DXIL emission](crates/victory-shader/src/emit/mod.rs) lowers the program
+   and assembles host bytecode with its metadata.
+5. [The CLI](apps/xemss/src/main.rs) optionally validates the result with the
+   Windows SDK, then writes it to the chosen output path.
+
+</details>
 
 <details>
 <summary><b>Browse the source tree</b></summary>
@@ -202,6 +291,63 @@ compiler is unavailable. When reporting a result, include the Git revision,
 Windows version, adapter, driver, and any skipped checks. See
 [Windows CI runs](https://github.com/tecnofifamobile-ai/XEMSS/actions/workflows/ci.yml)
 for results tied to individual commits.
+
+</details>
+
+<details>
+<summary><b>Reproduce the measured baseline or isolate one regression</b></summary>
+
+To record an ordered test log with optional checks visible, run the suite with
+one test thread. Use the same SDK setting as in the CLI smoke test above to
+include the validator.
+
+```powershell
+cargo test --workspace --locked -- --test-threads=1 --nocapture
+```
+
+Use a filter when working on container parsing or GPU arithmetic.
+
+```powershell
+cargo test -p victory-shader --locked dxbc::tests
+cargo test -p victory-shader --locked max_and_min_order_negative_zero_below_positive_zero -- --nocapture
+```
+
+| Setting | Affects |
+| --- | --- |
+| `VICTORY_DXIL` | Windows SDK validator selected by the CLI and shader utilities. |
+| `XEMSS_TEST_DXIL` | Enables the CLI integration fixture's validation path with the specified SDK DLL. |
+| `VICTORY_WARP=1` | Selects WARP in the D3D12 test helper. Leave it unset when recording results for the hardware adapter. |
+| `VICTORY_CONSOLE_DXC` | An already installed console compiler for optional shader comparisons. |
+| `VICTORY_PC_DXC` | Overrides the desktop shader compiler used by those comparisons. |
+
+</details>
+
+## Road to game boot
+
+The loader, graphics runtime, and shader translator will each have a workload
+with an observable result. This makes it possible to isolate failures before
+testing a full title.
+
+| Status | Next proof | Evidence to record |
+| --- | --- | --- |
+| 🔴 | Run a synthetic AMD64 entry point | Mapping base, relocation result, bound imports, and expected return value. |
+| 🔴 | Submit a small D3D12 workload | Resource bindings, command submission result, and expected buffer or pixel bytes. |
+| 🟡 | Close shader regressions | A minimal instruction sequence, expected channel or lane values, and readback on available backends. |
+| 🔴 | Verify a first game frame | Exact revision, host, adapter, driver, first failing stage, and reproducible result. |
+
+<details>
+<summary><b>Compare results with other projects</b></summary>
+
+Use upstream reports to choose a small test case, then record the XEMSS
+result independently. The [roadmap](docs/roadmap.md) links the current
+investigations.
+
+- VIctory has reports on [descriptor slots retained after binding failures](https://github.com/Marvisak/VIctory/issues/911)
+  and [helper-lane control flow](https://github.com/Marvisak/VIctory/issues/908).
+- XCL tracks [signed-zero ordering in floating-point min/max](https://github.com/ivall/xcl/issues/1282).
+  XEMSS's f32 harness checks its own DXIL behavior. A separate
+  [XEMSS pull request](https://github.com/tecnofifamobile-ai/XEMSS/pull/1)
+  records verification for f16.
 
 </details>
 
