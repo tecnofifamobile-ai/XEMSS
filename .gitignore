@@ -1,0 +1,13 @@
+/target/
+/test-data/
+/local/
+*.exe
+*.dll
+*.pdb
+*.bin
+*.dxbc
+*.dxil
+*.rpf
+*.xvc
+*.xvd
+*.msixvc
