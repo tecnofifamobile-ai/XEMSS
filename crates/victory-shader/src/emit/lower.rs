@@ -5594,11 +5594,12 @@ impl<'a> Lower<'a> {
             return Err("an image access with tfe or lwe");
         }
         let name = inst.name();
+        let store = name.starts_with("image_store");
         if *a16 && name.starts_with("image_sample_b") {
             return Err("a biased image sample with 16-bit coordinates");
         }
         // A load or sample with no channel enabled returns the first.
-        let dmask = if *dmask == 0 { &1 } else { dmask };
+        let dmask = if *dmask == 0 && !store { &1 } else { dmask };
         let site = (b, i);
         let guard = self.guard(b, i)?;
         let c = self.cur;
@@ -5645,7 +5646,6 @@ impl<'a> Lower<'a> {
             .get(&(site, false))
             .copied()
             .ok_or("an untracked image")?;
-        let store = name.starts_with("image_store");
         let uav = store
             || self
                 .used_kind(src)
@@ -5730,10 +5730,8 @@ impl<'a> Lower<'a> {
             if name != "image_store" {
                 return Err("an image store to a mip level");
             }
-            // shortcut: stores are taken to write all four channels of a
-            // float format (the console converts by the view's format).
-            if *dmask != 0xF {
-                return Err("an image store of some channels");
+            if *dmask == 0 {
+                return Err("an image store with no channels");
             }
             let iu = self.s.m.undef(self.s.t.i32);
             let mut cs = vec![iu; 3];
@@ -5743,14 +5741,17 @@ impl<'a> Lower<'a> {
             let Operand::Vector { reg, .. } = *data else {
                 return Err("image store data");
             };
-            let mut vals = Vec::new();
-            for k in 0..4u8 {
-                // d16: two f16 channels per VGPR, low half first.
-                let r = if *d16 { k / 2 } else { k };
+            // RDNA2 packs the enabled components into consecutive VGPRs
+            // and supplies zero for missing components. DXIL takes all four.
+            let mut vals = [self.s.m.f32(0); 4];
+            let channels = (0..4).filter(|channel| *dmask >> channel & 1 != 0);
+            for (packed, channel) in channels.enumerate() {
+                // d16: two enabled f16 components per VGPR, low half first.
+                let r = if *d16 { packed / 2 } else { packed } as u8;
                 let v = inst.read(Reg::V(reg + r)).ok_or("image store data")?;
-                vals.push(if *d16 {
+                vals[channel] = if *d16 {
                     let mut x = self.i32_of(v)?;
-                    if k % 2 == 1 {
+                    if packed % 2 == 1 {
                         let k16 = self.s.m.i32(16);
                         x = self.s.m.bin(self.cur, Bin::LShr, x, k16);
                     }
@@ -5759,7 +5760,7 @@ impl<'a> Lower<'a> {
                         .op(self.cur, "legacyF16ToF32", Attr::ReadNone, f32t, 131, &[x])
                 } else {
                     self.float_of(v)?
-                });
+                };
             }
             let h = self.handle(site, src, false, props)?;
             let at = self.begin_guarded(guard);
