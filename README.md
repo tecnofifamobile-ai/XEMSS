@@ -27,6 +27,7 @@ partially verified · 🔴 Pending a working milestone or a verified result
 | Implemented CLI commands | **3** | Inspect PE, inspect DXBC, and translate a shader. |
 | Shader stages with a translation path | **4** | Vertex, pixel, compute, and mesh. Instruction coverage varies by stage. |
 | Stages exercised end to end by the CLI fixture | **1 of 4** | Compute. The fixture generates its own console-style DXBC and checks the emitted DXIL. |
+| Nonzero `image_store` channel masks verified | **15 of 15** | Read back on a four-channel float texture, using both f32 and packed f16 shader inputs. |
 | D3D12 test backends exercised locally | **2** | The hardware adapter and WARP ran the synthetic f32 signed-zero regression. |
 | Verified game boots | **0** | XEMSS has a synthetic test suite and a pending loader milestone. |
 
@@ -39,6 +40,7 @@ partially verified · 🔴 Pending a working milestone or a verified result
 | ✅ | DXBC inspection | Lists container sections and shader stages. Rejects parts that point into the header or offset table. | [Header-boundary regression](crates/victory-shader/src/dxbc.rs). |
 | ✅ | Output handling | The CLI writes a new DXIL file and preserves any existing file at the chosen destination. | [End-to-end CLI tests](apps/xemss/tests/cli.rs). |
 | ✅ | SDK validation | Checks emitted DXIL with an installed Windows SDK before writing it when `--validate` is set. | [Run the integration test with the SDK](#verification). |
+| ✅ | Masked float texture stores | Maps packed RDNA2 operands to the selected components and writes zero to the remaining components of the texel. | [Shader readback regression](crates/victory-shader/src/emit/valu_tests.rs). |
 | 🟡 | RDNA2 → DXIL | Translation paths exist for four stages. Coverage depends on the instructions, formats, and resource patterns in each shader. | [Stage matrix](#shader-stage-coverage) and [synthetic compute fixture](apps/xemss/tests/cli.rs). |
 | 🟡 | GPU behavior | Selected synthetic shaders run through D3D12. Broader driver and game coverage is pending. | [GPU tests](crates/victory-shader/src/emit/valu_tests.rs). |
 
@@ -333,6 +335,7 @@ testing a full title.
 | 🔴 | Run a synthetic AMD64 entry point | Mapping base, relocation result, bound imports, and expected return value. |
 | 🔴 | Submit a small D3D12 workload | Resource bindings, command submission result, and expected buffer or pixel bytes. |
 | 🟡 | Close shader regressions | A minimal instruction sequence, expected channel or lane values, and readback on available backends. |
+| 🔴 | Measure shader compile throughput | Translation time, DXIL size, and cold D3D12 pipeline creation time for the same inputs. |
 | 🔴 | Verify a first game frame | Exact revision, host, adapter, driver, first failing stage, and reproducible result. |
 
 <details>
@@ -348,6 +351,12 @@ investigations.
   XEMSS's f32 harness checks its own DXIL behavior. A separate
   [XEMSS pull request](https://github.com/tecnofifamobile-ai/XEMSS/pull/1)
   records verification for f16.
+- [XCL #1269](https://github.com/ivall/xcl/issues/1269) discusses direct DXIL
+  emission and the cost of EXEC handling. XEMSS already emits DXIL directly
+  and preserves lane predicates where the control-flow analysis requires them.
+  Its [bitcode benchmark](crates/victory-shader/src/emit/bitcode.rs) measures
+  serialization of synthetic modules. Full translation and driver pipeline
+  timings are pending.
 
 </details>
 
