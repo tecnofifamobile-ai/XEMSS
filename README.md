@@ -24,7 +24,7 @@ partially verified · 🔴 Pending a working milestone or a verified result
 
 | Measure | Count | Scope |
 | --- | ---: | --- |
-| Implemented CLI commands | **3** | Inspect PE, inspect DXBC, and translate a shader. |
+| Implemented CLI commands | **4** | Inspect PE, inspect DXBC, translate one shader, or translate a directory. |
 | Shader stages with a translation path | **4** | Vertex, pixel, compute, and mesh. Instruction coverage varies by stage. |
 | Stages exercised end to end by the CLI fixture | **1 of 4** | Compute. The fixture generates its own console-style DXBC and checks the emitted DXIL. |
 | Nonzero `image_store` channel masks verified | **15 of 15** | Read back on a four-channel float texture, using both f32 and packed f16 shader inputs. |
@@ -37,8 +37,10 @@ partially verified · 🔴 Pending a working milestone or a verified result
 | --- | --- | --- | --- |
 | ✅ | Windows x64 build | The pinned Rust workspace builds with the locked dependency set. | [Windows CI](https://github.com/tecnofifamobile-ai/XEMSS/actions/workflows/ci.yml). |
 | ✅ | PE32+ inspection | Reads AMD64 image metadata, imports, delay-load imports, exports, and TLS callbacks. | [CLI smoke test](apps/xemss/tests/cli.rs) and [PE parser tests](crates/victory-pe/src/image.rs). |
+| ✅ | TLS metadata checks | Checks the PE32+ TLS directory, bounds callback addresses to the mapped image, and requires a terminated list. | [Synthetic TLS fixtures](crates/victory-pe/src/image.rs). |
 | ✅ | DXBC inspection | Lists container sections and shader stages. Rejects parts that point into the header or offset table. | [Header-boundary regression](crates/victory-shader/src/dxbc.rs). |
 | ✅ | Output handling | The CLI writes a new DXIL file and preserves any existing file at the chosen destination. | [End-to-end CLI tests](apps/xemss/tests/cli.rs). |
+| ✅ | Batch shader coverage report | Attempts each native program and reports the programs written, program failures, and unreadable or invalid containers. | [Mixed-corpus CLI test](apps/xemss/tests/cli.rs). |
 | ✅ | SDK validation | Checks emitted DXIL with an installed Windows SDK before writing it when `--validate` is set. | [Run the integration test with the SDK](#verification). |
 | ✅ | Masked float texture stores | Maps packed RDNA2 operands to the selected components and writes zero to the remaining components of the texel. | [Shader readback regression](crates/victory-shader/src/emit/valu_tests.rs). |
 | 🟡 | RDNA2 → DXIL | Translation paths exist for four stages. Coverage depends on the instructions, formats, and resource patterns in each shader. | [Stage matrix](#shader-stage-coverage) and [synthetic compute fixture](apps/xemss/tests/cli.rs). |
@@ -164,6 +166,28 @@ output path in an existing folder. The CLI validates the DXIL with
 `dxil.dll` before publishing it when `--validate` is set. Set `VICTORY_DXIL`
 to the absolute path to your Windows SDK's `dxil.dll` to select a specific
 validator.
+
+</details>
+
+<details>
+<summary><b>Translate a directory and report every failure</b></summary>
+
+```powershell
+& $xemss translate-shaders .\local\dxbc --output .\local\dxil --validate
+```
+
+Use a directory of individual, authorized DXBC files. The command reads
+top-level `.dxbc` files, including uppercase extensions, and attempts each
+native program in their DXIL parts. A successful output includes the source
+filename, the program's ordinal, and its stage, for example
+`sample.dxbc.2.Cs.dxil`.
+
+The summary reports container and program failures separately. A failure
+sets a nonzero exit code after the rest of the directory has been processed.
+Successful outputs remain available and existing files are preserved.
+Per-program translation timing covers IR construction and DXIL emission
+after the container has been decoded. The optional SDK check and output
+write run after that timer.
 
 </details>
 
@@ -355,8 +379,14 @@ investigations.
   emission and the cost of EXEC handling. XEMSS already emits DXIL directly
   and preserves lane predicates where the control-flow analysis requires them.
   Its [bitcode benchmark](crates/victory-shader/src/emit/bitcode.rs) measures
-  serialization of synthetic modules. Full translation and driver pipeline
-  timings are pending.
+  serialization of synthetic modules. Batch mode now records per-program
+  translation time. Cold driver pipeline timings are pending.
+- [XCL #1315](https://github.com/ivall/xcl/pull/1315) and
+  [#1316](https://github.com/ivall/xcl/pull/1316) profile a compact dispatcher
+  for unusually repetitive compute shaders. XEMSS now assigns decoded
+  instructions to blocks in address order and rejects a late-resolved
+  target that has no decoded instruction. A compact emitter would need
+  independent GPU readback and pipeline timings on XEMSS inputs.
 
 </details>
 
