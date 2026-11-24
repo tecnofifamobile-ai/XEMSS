@@ -17,7 +17,7 @@ fn expect_success(output: Output) -> String {
 }
 
 /// One compute stage with a 64x1x1 group and a single s_endpgm instruction.
-fn synthetic_compute() -> Vec<u8> {
+fn synthetic_compute(include_ls: bool) -> Vec<u8> {
     const RECORD: usize = 0x68;
     const STAGE: usize = RECORD + 0x54;
     const CODE: usize = STAGE + 0x34;
@@ -25,6 +25,9 @@ fn synthetic_compute() -> Vec<u8> {
     payload[..8].copy_from_slice(&6u64.to_le_bytes());
     for slot in [0x08, 0x10, 0x18, 0x20, 0x28, 0x30, 0x48] {
         payload[slot..slot + 8].copy_from_slice(&0xDEAD_BEEF_DEAD_BEEFu64.to_le_bytes());
+    }
+    if include_ls {
+        payload[0x08..0x10].copy_from_slice(&(RECORD as u64).to_le_bytes());
     }
     payload[0x60..0x68].copy_from_slice(&(RECORD as u64).to_le_bytes());
     payload[RECORD..RECORD + 8].copy_from_slice(&(CODE as u64).to_le_bytes());
@@ -70,7 +73,7 @@ fn translates_a_synthetic_shader_without_overwriting() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("compute.dxbc");
     let output = dir.path().join("compute.dxil");
-    fs::write(&input, synthetic_compute()).unwrap();
+    fs::write(&input, synthetic_compute(false)).unwrap();
 
     let info = expect_success(
         command()
@@ -104,6 +107,58 @@ fn translates_a_synthetic_shader_without_overwriting() {
     let error = String::from_utf8_lossy(&refused.stderr);
     assert!(error.contains("without overwriting"), "{error}");
     assert_eq!(fs::read(&output).unwrap(), b"keep existing file");
+}
+
+#[test]
+fn batch_reports_failures_and_writes_the_other_programs() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("corpus");
+    let output = dir.path().join("out");
+    fs::create_dir(&input).unwrap();
+    fs::write(input.join("bad.dxbc"), b"bad container").unwrap();
+    fs::write(input.join("mixed.DXBC"), synthetic_compute(true)).unwrap();
+    fs::write(input.join("ordinary.dxbc"), synthetic_compute(false)).unwrap();
+    fs::write(input.join("notes.txt"), b"ignored").unwrap();
+    let run = || {
+        let mut cmd = command();
+        cmd.arg("translate-shaders")
+            .arg(&input)
+            .arg("-o")
+            .arg(&output);
+        if let Some(validator) = std::env::var_os("XEMSS_TEST_DXIL") {
+            cmd.arg("--validate").env("VICTORY_DXIL", validator);
+        }
+        cmd.output().unwrap()
+    };
+
+    let result = run();
+    assert!(!result.status.success());
+    let stdout = String::from_utf8(result.stdout).unwrap();
+    let stderr = String::from_utf8(result.stderr).unwrap();
+    assert!(
+        stdout
+            .contains("3 containers, 2 programs written, 1 program failures, 1 container failures"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("translation:"), "{stdout}");
+    assert!(stderr.contains("bad.dxbc"), "{stderr}");
+    assert!(stderr.contains("program 1 (Ls)"), "{stderr}");
+    for name in ["mixed.DXBC.2.Cs.dxil", "ordinary.dxbc.1.Cs.dxil"] {
+        let bytes = fs::read(output.join(name)).unwrap();
+        assert!(
+            Container::parse(&bytes)
+                .unwrap()
+                .part(FourCC::DXIL)
+                .is_some()
+        );
+    }
+    assert_eq!(fs::read_dir(&output).unwrap().count(), 2);
+
+    let repeated = run();
+    assert!(!repeated.status.success());
+    let error = String::from_utf8(repeated.stderr).unwrap();
+    assert!(error.contains("without overwriting"), "{error}");
+    assert_eq!(fs::read_dir(output).unwrap().count(), 2);
 }
 
 #[test]

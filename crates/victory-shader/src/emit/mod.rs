@@ -188,30 +188,62 @@ pub struct UserData {
 /// Translates the vertex, pixel, compute or mesh program of a console
 /// shader container.
 pub fn translate(container: &[u8]) -> Result<HostShader, ShaderError> {
-    let c = Container::parse(container)?;
-    let dxil = c
-        .part(FourCC::DXIL)
-        .ok_or(ShaderError::Malformed("no DXIL part"))?;
-    let native = crate::native_programs(dxil.data)?
+    let (c, programs) = read_programs(container)?;
+    let native = programs
         .into_iter()
-        .find(|p| {
-            matches!(
-                p.stage,
-                HwStage::Vs | HwStage::Ps | HwStage::Cs | HwStage::Ms
-            )
-        })
+        .find(|p| supported_stage(p.stage))
         .ok_or(ShaderError::Unsupported {
             offset: 0,
             what: "a container without a vertex, pixel, compute or mesh program",
         })?;
+    translate_program(&c, &native)
+}
+
+/// Translates each native program independently, in container order.
+/// An unsupported stage or instruction does not discard the other results.
+pub fn translate_programs(
+    container: &[u8],
+) -> Result<impl Iterator<Item = (HwStage, Result<HostShader, ShaderError>)> + '_, ShaderError> {
+    let (c, programs) = read_programs(container)?;
+    if programs.is_empty() {
+        return Err(ShaderError::Malformed("no native programs in the DXIL part"));
+    }
+    Ok(programs.into_iter().map(move |native| {
+        let stage = native.stage;
+        let result = if supported_stage(stage) {
+            translate_program(&c, &native)
+        } else {
+            Err(ShaderError::Unsupported {
+                offset: 0,
+                what: "hardware shader stage",
+            })
+        };
+        (stage, result)
+    }))
+}
+
+fn supported_stage(stage: HwStage) -> bool {
+    matches!(stage, HwStage::Vs | HwStage::Ps | HwStage::Cs | HwStage::Ms)
+}
+
+fn read_programs(container: &[u8]) -> Result<(Container<'_>, Vec<NativeProgram>), ShaderError> {
+    let c = Container::parse(container)?;
+    let dxil = c
+        .part(FourCC::DXIL)
+        .ok_or(ShaderError::Malformed("no DXIL part"))?;
+    let programs = crate::native_programs(dxil.data)?;
+    Ok((c, programs))
+}
+
+fn translate_program(c: &Container<'_>, native: &NativeProgram) -> Result<HostShader, ShaderError> {
     let p = ir::build(&native.patched_code(), native.wave64, native.vgprs)?;
     // Structurisation first: tracing per-lane descriptors needs it (its
     // failure is reported after the earlier stages').
     let st = structure::structure(&p);
     let res = resource::track(&p, &native.layout, native.stage, st.as_ref().ok())?;
-    let io = io::raise(&p, &native)?;
+    let io = io::raise(&p, native)?;
     let st = st?;
-    emit(&c, &native, &p, &st, &io, &res)
+    emit(c, native, &p, &st, &io, &res)
 }
 
 /// Emits a program whose earlier stages already ran.

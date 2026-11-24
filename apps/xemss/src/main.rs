@@ -1,10 +1,12 @@
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use victory_pe::ImageInfo;
+use victory_shader::emit::HostShader;
 use victory_shader::{Container, FourCC, emit, native_programs};
 
 const MAX_PE_BYTES: u64 = 512 * 1024 * 1024;
@@ -37,6 +39,15 @@ enum Command {
         #[arg(long)]
         validate: bool,
     },
+    /// Translate every native program in the DXBC files in a directory.
+    TranslateShaders {
+        input: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Validate every translated shader with the installed Windows SDK.
+        #[arg(long)]
+        validate: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -48,6 +59,11 @@ fn main() -> Result<()> {
             output,
             validate,
         } => translate_shader(&input, &output, validate),
+        Command::TranslateShaders {
+            input,
+            output,
+            validate,
+        } => translate_shaders(&input, &output, validate),
     }
 }
 
@@ -152,9 +168,86 @@ fn translate_shader(input: &Path, output: &Path, validate: bool) -> Result<()> {
     let bytes = read_input(input, MAX_SHADER_BYTES)?;
     let mut shader =
         emit::translate(&bytes).with_context(|| format!("translating {}", input.display()))?;
-    if validate {
-        validate_dxil(&mut shader.dxil)?;
+    create_validator(validate)?(&mut shader.dxil)?;
+    write_shader(&shader, output, validate)
+}
+
+fn translate_shaders(input: &Path, output: &Path, validate: bool) -> Result<()> {
+    let mut paths = Vec::new();
+    for entry in std::fs::read_dir(input).with_context(|| format!("reading {}", input.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("dxbc"))
+            && entry.file_type()?.is_file()
+        {
+            paths.push(path);
+        }
     }
+    ensure!(!paths.is_empty(), "no DXBC files in {}", input.display());
+    let mut validate_dxil = create_validator(validate)?;
+    paths.sort_unstable();
+    std::fs::create_dir_all(output).with_context(|| format!("creating {}", output.display()))?;
+
+    let (mut written, mut program_failures, mut container_failures) = (0, 0, 0);
+    for path in &paths {
+        let bytes = match read_input(path, MAX_SHADER_BYTES) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("{}: {error:#}", path.display());
+                container_failures += 1;
+                continue;
+            }
+        };
+        let mut programs = match emit::translate_programs(&bytes) {
+            Ok(programs) => programs.enumerate(),
+            Err(error) => {
+                eprintln!("{}: {error}", path.display());
+                container_failures += 1;
+                continue;
+            }
+        };
+        loop {
+            let started = Instant::now();
+            let Some((index, (stage, result))) = programs.next() else {
+                break;
+            };
+            let elapsed = started.elapsed();
+            let ordinal = index + 1;
+            let mut name = path.file_name().expect("directory entry").to_owned();
+            name.push(format!(".{ordinal}.{stage:?}.dxil"));
+            let destination = output.join(name);
+            match result.map_err(anyhow::Error::from).and_then(|mut shader| {
+                validate_dxil(&mut shader.dxil)?;
+                write_shader(&shader, &destination, validate)
+            }) {
+                Ok(()) => {
+                    println!("  Program {ordinal} translation: {elapsed:?}");
+                    written += 1;
+                }
+                Err(error) => {
+                    eprintln!(
+                        "{} program {ordinal} ({stage:?}): {error:#}",
+                        path.display()
+                    );
+                    program_failures += 1;
+                }
+            }
+        }
+    }
+    println!(
+        "Batch: {} containers, {written} programs written, {program_failures} program failures, {container_failures} container failures",
+        paths.len()
+    );
+    ensure!(
+        program_failures == 0 && container_failures == 0,
+        "shader batch incomplete"
+    );
+    Ok(())
+}
+
+fn write_shader(shader: &HostShader, output: &Path, validated: bool) -> Result<()> {
     let directory = output
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -175,7 +268,7 @@ fn translate_shader(input: &Path, output: &Path, validate: bool) -> Result<()> {
         shader.stage,
         output.display(),
         shader.dxil.len(),
-        if validate {
+        if validated {
             "validated"
         } else {
             "validation not requested"
@@ -185,17 +278,30 @@ fn translate_shader(input: &Path, output: &Path, validate: bool) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn validate_dxil(bytes: &mut [u8]) -> Result<()> {
+fn create_validator(requested: bool) -> Result<impl FnMut(&mut [u8]) -> Result<()>> {
     use victory_shader::emit::validator::Validator;
 
-    let path = Validator::default_path()
-        .filter(|p| p.is_absolute())
-        .context("set VICTORY_DXIL to the absolute path to your Windows SDK's dxil.dll")?;
-    let mut validator = Validator::load(Some(&path)).map_err(anyhow::Error::msg)?;
-    validator.validate(bytes).map_err(anyhow::Error::msg)
+    let mut validator = if requested {
+        let path = Validator::default_path()
+            .filter(|p| p.is_absolute())
+            .context("set VICTORY_DXIL to the absolute path to your Windows SDK's dxil.dll")?;
+        Some(Validator::load(Some(&path)).map_err(anyhow::Error::msg)?)
+    } else {
+        None
+    };
+    Ok(move |bytes: &mut [u8]| {
+        if let Some(validator) = &mut validator {
+            validator.validate(bytes).map_err(anyhow::Error::msg)?;
+        }
+        Ok(())
+    })
 }
 
 #[cfg(not(windows))]
-fn validate_dxil(_bytes: &mut [u8]) -> Result<()> {
-    anyhow::bail!("DXIL validation requires Windows and an installed Windows SDK")
+fn create_validator(requested: bool) -> Result<impl FnMut(&mut [u8]) -> Result<()>> {
+    ensure!(
+        !requested,
+        "DXIL validation requires Windows and an installed Windows SDK"
+    );
+    Ok(|_: &mut [u8]| Ok(()))
 }
