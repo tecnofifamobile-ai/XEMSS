@@ -3,7 +3,8 @@
 //!
 //! Covers RDNA2 hardware semantics that differ from naive DXIL lowering:
 //! `v_med3_f32`/`v_med3_f16` with NaN operands, `v_fract_f32`/`v_fract_f16`
-//! near `1.0`, and turn-range reduction for `v_sin_*`/`v_cos_*`.
+//! near `1.0`, turn-range reduction for `v_sin_*`/`v_cos_*`, and masked
+//! texture stores.
 
 use super::host::{Dispatch, Host, Root, View};
 use super::{HostShader, lower, validator};
@@ -121,14 +122,17 @@ fn build_valu_cs(body: &[u32]) -> HostShader {
         }),
         code,
     };
+    lower_cs(&native)
+}
 
+fn lower_cs(native: &NativeProgram) -> HostShader {
     let p = ir::build(&native.code, native.wave64, native.vgprs).expect("ir::build");
     let st = structure::structure(&p).expect("structure");
     let res =
         resource::track(&p, &native.layout, native.stage, Some(&st)).expect("resource::track");
-    let io = io::raise(&p, &native).expect("io::raise");
+    let io = io::raise(&p, native).expect("io::raise");
     let lowered = lower::lower(&lower::Parts {
-        native: &native,
+        native,
         p: &p,
         st: &st,
         io: &io,
@@ -155,6 +159,8 @@ fn build_valu_cs(body: &[u32]) -> HostShader {
         let ours = copy[4..20].to_vec();
         v.validate(&mut copy).expect("DXIL validation failed");
         assert_eq!(copy[4..20], ours[..], "container hash mismatch");
+    } else {
+        eprintln!("no dxil.dll; validation skipped");
     }
 
     shader
@@ -166,6 +172,111 @@ fn build_valu_cs(body: &[u32]) -> HostShader {
 /// WARP can end the test process with an access violation. Other GPU test
 /// modules take this lock too.
 pub(super) static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+const TEXEL_VALUES: [f32; 4] = [1.5, -2.0, 3.25, 4.5];
+
+fn build_image_store_cs(d16: bool) -> HostShader {
+    let mut words = vec![
+        s_mov_b32(1, 0x80),               // s1 = 0, high word of the table address
+        0x3D << 26 | 0x03 << 18 | 8 << 6, // s_load_dwordx8 s[8:15], s[0:1], 0
+        125 << 25,                        // soffset = null
+        vop1(0x001, 6, 0x80),             // v6 = y coordinate 0
+    ];
+    let packed = [0xC000_3E00, 0x4480_4280];
+    let floats = TEXEL_VALUES.map(f32::to_bits);
+    let data: &[u32] = if d16 { &packed } else { &floats };
+    for (reg, value) in data.iter().enumerate() {
+        words.extend([vop1(0x001, reg as u8, 0xFF), *value]);
+    }
+    for mask in 1..=15u16 {
+        words.extend([
+            vop1(0x001, 5, 0x80 + mask - 1), // one texel per mask
+            // image_store v0, v[5:6], s[8:15], dim:2D, unorm
+            0x3C << 26 | 0x08 << 18 | 1 << 12 | u32::from(mask) << 8 | 1 << 3,
+            u32::from(d16) << 31 | 2 << 16 | 5,
+        ]);
+    }
+    words.push(S_ENDPGM);
+    lower_cs(&NativeProgram {
+        stage: HwStage::Cs,
+        wave64: false,
+        vgprs: 8,
+        layout: vec![RootParam {
+            root: RootType::Table,
+            table_offset_dwords: 0,
+            sgprs: 1,
+            base_register: 0,
+            user_data: 0,
+            slot: 0,
+        }],
+        used: vec![UsedResource {
+            kind: ResourceType::Uav,
+            root: RootType::Table,
+            table_offset_dwords: 0,
+            lower_bound: 0,
+            stride: 0,
+            dwords: 8,
+            user_data: 0,
+            slot: 0,
+        }],
+        io: StageIo::Cs(ComputeIo {
+            rsrc2: 1 << 1,
+            threads: [1, 1, 1],
+        }),
+        code: words.iter().flat_map(|word| word.to_le_bytes()).collect(),
+    })
+}
+
+#[test]
+fn image_store_unpacks_every_nonzero_channel_mask() {
+    let shaders = [
+        (false, build_image_store_cs(false)),
+        (true, build_image_store_cs(true)),
+    ];
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let mut ran = 0;
+    for (backend, warp) in [("hardware", false), ("warp", true)] {
+        let Ok(host) = Host::new(warp) else {
+            eprintln!("no SM 6.6 {backend} device; skipped");
+            continue;
+        };
+        for (d16, shader) in &shaders {
+            let (root, pipeline) = host.compute_pipeline(shader).expect("image store pipeline");
+            let readback = host
+                .dispatch(
+                    &root,
+                    &pipeline,
+                    &Dispatch {
+                        roots: vec![(
+                            0,
+                            Root::Constants(vec![0; shader.user_data_dwords().max(1) as usize]),
+                        )],
+                        views: &[View::TextureUav(15, 1)],
+                        samplers: &[],
+                        groups: [1, 1, 1],
+                    },
+                )
+                .expect("image store dispatch");
+            assert_eq!(readback[0].len(), 15 * 4);
+            let (texels, _) = readback[0].as_chunks::<4>();
+            for (texel, actual) in texels.iter().enumerate() {
+                let mask = texel + 1;
+                let mut packed = TEXEL_VALUES.into_iter();
+                let expected: [u32; 4] = std::array::from_fn(|channel| {
+                    if mask & (1 << channel) != 0 {
+                        packed.next().unwrap().to_bits()
+                    } else {
+                        0
+                    }
+                });
+                assert_eq!(*actual, expected, "{backend}: d16={d16}, dmask={mask:#x}");
+            }
+        }
+        eprintln!("{backend}: checked 15 masks with f32 and packed f16");
+        ran += 1;
+    }
+    assert!(ran > 0, "neither hardware nor WARP SM 6.6 device available");
+}
 
 /// Runs `shader` on every available SM 6.6 host (hardware GPU and WARP) for
 /// each 4-dword input set and invokes `check(backend, case_index, inputs, result_dword)`.
