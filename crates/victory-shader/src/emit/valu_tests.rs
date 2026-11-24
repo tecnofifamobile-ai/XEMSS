@@ -364,7 +364,11 @@ fn half_max_and_min_preserve_the_expected_zero_sign() {
             } else {
                 operands.contains(&NEGATIVE_ZERO)
             };
-            let want = if negative { NEGATIVE_ZERO } else { POSITIVE_ZERO };
+            let want = if negative {
+                NEGATIVE_ZERO
+            } else {
+                POSITIVE_ZERO
+            };
             assert_eq!(got & 0xffff, want, "{backend}: {name} {operands:x?}");
         });
     }
