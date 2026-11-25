@@ -447,6 +447,45 @@ fn max_and_min_order_negative_zero_below_positive_zero() {
 }
 
 #[test]
+fn half_max_and_min_preserve_the_expected_zero_sign() {
+    const POSITIVE_ZERO: u32 = 0;
+    const NEGATIVE_ZERO: u32 = 0x8000;
+    let cases = [
+        [POSITIVE_ZERO, POSITIVE_ZERO, POSITIVE_ZERO, 0],
+        [POSITIVE_ZERO, POSITIVE_ZERO, NEGATIVE_ZERO, 0],
+        [POSITIVE_ZERO, NEGATIVE_ZERO, POSITIVE_ZERO, 0],
+        [POSITIVE_ZERO, NEGATIVE_ZERO, NEGATIVE_ZERO, 0],
+        [NEGATIVE_ZERO, POSITIVE_ZERO, POSITIVE_ZERO, 0],
+        [NEGATIVE_ZERO, POSITIVE_ZERO, NEGATIVE_ZERO, 0],
+        [NEGATIVE_ZERO, NEGATIVE_ZERO, POSITIVE_ZERO, 0],
+        [NEGATIVE_ZERO, NEGATIVE_ZERO, NEGATIVE_ZERO, 0],
+    ];
+    let ops = [
+        ("v_max_f16", 0x139, 2, true),
+        ("v_min_f16", 0x13a, 2, false),
+        ("v_max3_f16", 0x354, 3, true),
+        ("v_min3_f16", 0x351, 3, false),
+    ];
+    for (name, op, arity, max) in ops {
+        let shader = build_valu_cs(&vop3(op, 0, vgpr(1), vgpr(2), vgpr(3)));
+        run_cases(&shader, &cases, |backend, _, inputs, got| {
+            let operands = &inputs[..arity];
+            let negative = if max {
+                operands.iter().all(|&value| value == NEGATIVE_ZERO)
+            } else {
+                operands.contains(&NEGATIVE_ZERO)
+            };
+            let want = if negative {
+                NEGATIVE_ZERO
+            } else {
+                POSITIVE_ZERO
+            };
+            assert_eq!(got & 0xffff, want, "{backend}: {name} {operands:x?}");
+        });
+    }
+}
+
+#[test]
 fn v_med3_f16_matches_rdna2_with_nan() {
     // v_med3_f16 v0, v1, v2, v3 (VOP3 opcode 0x357)
     let shader = build_valu_cs(&vop3(0x357, 0, vgpr(1), vgpr(2), vgpr(3)));
